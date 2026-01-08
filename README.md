@@ -16,10 +16,20 @@ Automated BGT reward allocation optimizer for Berachain validators. Hunts for th
 
 - Python 3.11+
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) (for `cast`)
-- `requests` and `pyyaml` Python packages
+
+## Installation
 
 ```bash
-pip install requests pyyaml
+# Clone the repo
+git clone https://github.com/YOUR_USERNAME/honeyhunter.git
+cd honeyhunter
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 ## Quick Start
@@ -32,6 +42,7 @@ cp config.yaml.example config.yaml
 
 2. **Test with dry-run**:
 ```bash
+source venv/bin/activate  # If not already activated
 python honeyhunter.py --dry-run
 ```
 
@@ -125,7 +136,7 @@ python honeyhunter.py --init           # Create default config file
 ### Cron (every 2 hours)
 
 ```bash
-0 */2 * * * cd /path/to/honeyhunter && /usr/bin/python3 honeyhunter.py >> honeyhunter.log 2>&1
+0 */2 * * * cd /path/to/honeyhunter && ./venv/bin/python honeyhunter.py >> honeyhunter.log 2>&1
 ```
 
 ### Systemd Timer
@@ -133,14 +144,14 @@ python honeyhunter.py --init           # Create default config file
 Create `/etc/systemd/system/honeyhunter.service`:
 ```ini
 [Unit]
-Description=Berachain Reward Allocation Optimizer
+Description=HoneyHunter - Berachain Reward Allocation Optimizer
 After=network.target
 
 [Service]
 Type=oneshot
 User=your-user
 WorkingDirectory=/path/to/honeyhunter
-ExecStart=/usr/bin/python3 honeyhunter.py
+ExecStart=/path/to/honeyhunter/venv/bin/python honeyhunter.py
 StandardOutput=append:/path/to/honeyhunter/honeyhunter.log
 StandardError=append:/path/to/honeyhunter/honeyhunter.log
 ```
@@ -148,7 +159,7 @@ StandardError=append:/path/to/honeyhunter/honeyhunter.log
 Create `/etc/systemd/system/honeyhunter.timer`:
 ```ini
 [Unit]
-Description=Run Berachain Optimizer every 2 hours
+Description=Run HoneyHunter every 2 hours
 
 [Timer]
 OnCalendar=*:00/2:00
@@ -258,12 +269,14 @@ The script retries automatically. If persistent, check:
 
 ```
 honeyhunter/
-├── honeyhunter.py         # Main script
+├── honeyhunter.py       # Main script
 ├── config.yaml.example  # Example configuration (copy to config.yaml)
 ├── config.yaml          # Your configuration (git-ignored)
-├── honeyhunter.log        # Execution log (created on first run, git-ignored)
+├── honeyhunter.log      # Execution log (created on first run, git-ignored)
 ├── requirements.txt     # Python dependencies
+├── venv/                # Virtual environment (git-ignored)
 ├── .gitignore
+├── LICENSE
 └── README.md
 ```
 
