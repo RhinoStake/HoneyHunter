@@ -20,7 +20,7 @@ validator:
 
 contracts:
   # BeraChef contract address (rarely changes, but configurable)
-  berachef_address: "0xfb81E39E3970076ab2693fA5C45A07Cc724C93c2"
+  berachef_address: "0xdf960E8F3F19C481dDE769edEDD439ea1a63426a"
 
 strategy:
   # Include vaults within this % of best vault's efficiency
