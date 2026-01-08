@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
         "rpc_url": "https://rpc.berachain-apis.com",
     },
     "contracts": {
-        "berachef_address": "0xfb81E39E3970076ab2693fA5C45A07Cc724C93c2",
+        "berachef_address": "0xdf960E8F3F19C481dDE769edEDD439ea1a63426a",
     },
     "strategy": {
         "efficiency_threshold": 0.5,  # Include vaults within 50% of best
@@ -725,7 +725,7 @@ def optimize_allocation(
         raise AllocationError(f"CRITICAL: Only {len(weights)} vaults with positive allocation, need at least 4")
 
     # Log selected vaults
-    logger.info(f"Final allocation ({len(weights)} vaults):")
+    logger.info(f"Recommended allocation ({len(weights)} vaults):")
     for weight in weights:
         vault = allocations[weight.vault_address]["vault"]
         logger.info(
@@ -855,12 +855,12 @@ def get_current_allocation(config: dict, logger: logging.Logger) -> Optional[All
         weights = parse_allocation_response(output, logger)
 
         if weights:
-            logger.info(f"Current allocation ({len(weights)} vaults):")
+            logger.info(f"Current on-chain allocation ({len(weights)} vaults):")
             for w in weights:
                 logger.info(f"  {w.vault_address}: {w.percentage/100:.1f}%")
             return AllocationState(start_block=start_block, weights=weights, is_queued=False)
         else:
-            logger.info("No current allocation found")
+            logger.info("No current allocation found on-chain")
             return None
 
     except subprocess.TimeoutExpired:
@@ -1270,27 +1270,11 @@ def main():
             logger.error(f"Weights sum to {total}, expected 10000")
             return 1
 
-        logger.info(f"Recommended allocation ({len(weights)} vaults):")
-        for w in weights:
-            # Find vault for logging
-            vault = next((v for v in eligible if v.bera_vault.address.lower() == w.vault_address.lower()), None)
-            if vault:
-                name = f"{vault.protocol_name} {vault.vault_name}"
-                efficiency = f"${vault.bera_vault.usd_per_bgt:.4f}/BGT"
-            else:
-                name = "Unknown"
-                efficiency = "?"
-            logger.info(f"  {w.vault_address}: {w.percentage} ({w.percentage/100:.1f}%) - {name} - {efficiency}")
-
         if args.compare:
             logger.info("=" * 40)
-            logger.info("Current allocation:")
             current = get_current_allocation(config, logger)
-            if current and current.weights:
-                for w in current.weights:
-                    logger.info(f"  {w}")
-            else:
-                logger.info("  (no current allocation)")
+            if not current or not current.weights:
+                logger.info("Current allocation: (none)")
 
             queued = get_queued_allocation(config, logger)
             if queued:
