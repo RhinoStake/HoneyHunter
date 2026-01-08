@@ -128,7 +128,6 @@ python honeyhunter.py --dry-run        # Show what would be done
 python honeyhunter.py --compare        # Compare current vs recommended
 python honeyhunter.py --config FILE    # Use custom config file
 python honeyhunter.py -v               # Verbose output (debug logging)
-python honeyhunter.py --init           # Create default config file
 ```
 
 ## Automation
@@ -136,8 +135,10 @@ python honeyhunter.py --init           # Create default config file
 ### Cron (every 2 hours)
 
 ```bash
-0 */2 * * * cd /path/to/honeyhunter && ./venv/bin/python honeyhunter.py >> honeyhunter.log 2>&1
+0 */2 * * * cd /path/to/honeyhunter && ./venv/bin/python honeyhunter.py
 ```
+
+The script logs to `honeyhunter.log` automatically.
 
 ### Systemd Timer
 
@@ -152,9 +153,9 @@ Type=oneshot
 User=your-user
 WorkingDirectory=/path/to/honeyhunter
 ExecStart=/path/to/honeyhunter/venv/bin/python honeyhunter.py
-StandardOutput=append:/path/to/honeyhunter/honeyhunter.log
-StandardError=append:/path/to/honeyhunter/honeyhunter.log
 ```
+
+The script logs to `honeyhunter.log` in the working directory automatically.
 
 Create `/etc/systemd/system/honeyhunter.timer`:
 ```ini

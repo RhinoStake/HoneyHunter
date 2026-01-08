@@ -264,14 +264,6 @@ def load_config(config_path: Optional[str] = None) -> dict:
     return config
 
 
-def save_default_config(path: str = "config.yaml"):
-    """Save default configuration to file."""
-    with open(path, "w") as f:
-        yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False, sort_keys=False)
-    print(f"Created default config at {path}")
-    print("Please edit with your validator details before running.")
-
-
 # ============================================================================
 # Data Fetching with Retry
 # ============================================================================
@@ -1225,22 +1217,12 @@ def main():
         help="Enable verbose output"
     )
     parser.add_argument(
-        "--init",
-        action="store_true",
-        help="Create default config file and exit"
-    )
-    parser.add_argument(
         "--compare",
         action="store_true",
         help="Show current vs recommended allocation without executing"
     )
 
     args = parser.parse_args()
-
-    # Initialize config
-    if args.init:
-        save_default_config()
-        return 0
 
     # Setup logging
     logger = setup_logging(args.verbose)
@@ -1264,7 +1246,7 @@ def main():
         if not validate_config(config, logger):
             return 1
     elif not config["validator"]["pubkey"]:
-        logger.error("No validator pubkey configured. Run with --init to create config.")
+        logger.error("No validator pubkey configured. Copy config.yaml.example to config.yaml and edit it.")
         return 1
 
     try:
