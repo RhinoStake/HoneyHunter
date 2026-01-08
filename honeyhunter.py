@@ -1121,16 +1121,35 @@ def execute_allocation(
 
         # Try to extract tx hash
         tx_hash = None
-        for line in output.split("\n"):
-            line = line.strip()
-            if "transactionHash" in line:
-                parts = line.split()
-                tx_hash = parts[-1] if parts else None
-                break
-            # Also check for just the hash on its own line
-            if line.startswith("0x") and len(line) == 66:
-                tx_hash = line
-                break
+
+        # Check if output is JSON (cast sometimes returns event logs as JSON)
+        if output.startswith("[") or output.startswith("{"):
+            try:
+                import json
+                data = json.loads(output)
+                # Could be a list of event logs
+                if isinstance(data, list) and len(data) > 0:
+                    tx_hash = data[0].get("transactionHash")
+                elif isinstance(data, dict):
+                    tx_hash = data.get("transactionHash")
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: scan lines for tx hash patterns
+        if not tx_hash:
+            for line in output.split("\n"):
+                line = line.strip()
+                # Look for "transactionHash": "0x..."
+                if "transactionHash" in line:
+                    import re
+                    match = re.search(r'0x[a-fA-F0-9]{64}', line)
+                    if match:
+                        tx_hash = match.group(0)
+                        break
+                # Also check for just the hash on its own line
+                if line.startswith("0x") and len(line) == 66:
+                    tx_hash = line
+                    break
 
         if tx_hash:
             logger.info(f"Transaction submitted: {tx_hash}")
