@@ -1045,10 +1045,16 @@ def execute_allocation(
     if queued:
         current_block = get_current_block(config, logger)
         if queued.start_block > current_block:
-            logger.warning(
-                f"There is already a queued allocation for block {queued.start_block} "
-                f"(current: {current_block}). It will be overwritten."
+            blocks_remaining = queued.start_block - current_block
+            minutes_remaining = blocks_remaining * 2 // 60
+            msg = (
+                f"Allocation already queued for block {queued.start_block} "
+                f"(current: {current_block}, ~{minutes_remaining} min remaining). "
             )
+            if dry_run:
+                logger.warning(msg + "Would need to wait for it to activate.")
+            else:
+                raise ExecutionError(msg + "Wait for it to activate before submitting a new one.")
 
     # Get start block
     start_block = get_start_block(config, logger)
