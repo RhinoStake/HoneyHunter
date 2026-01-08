@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -891,7 +892,6 @@ def get_current_allocation(config: dict, logger: logging.Logger) -> Optional[All
         start_block = 0
         if output:
             # Try to extract start block from beginning
-            import re
             match = re.search(r'\((\d+)', output)
             if match:
                 start_block = int(match.group(1))
@@ -949,7 +949,6 @@ def get_queued_allocation(config: dict, logger: logging.Logger) -> Optional[Allo
         # Parse start block
         start_block = 0
         if output:
-            import re
             match = re.search(r'\((\d+)', output)
             if match:
                 start_block = int(match.group(1))
@@ -1175,31 +1174,32 @@ def execute_allocation(
         # Check if output is JSON (cast sometimes returns event logs as JSON)
         if output.startswith("[") or output.startswith("{"):
             try:
-                import json
                 data = json.loads(output)
                 # Could be a list of event logs
                 if isinstance(data, list) and len(data) > 0:
                     tx_hash = data[0].get("transactionHash")
+                    logger.debug(f"Extracted tx hash from JSON array: {tx_hash}")
                 elif isinstance(data, dict):
                     tx_hash = data.get("transactionHash")
-            except json.JSONDecodeError:
-                pass
+                    logger.debug(f"Extracted tx hash from JSON object: {tx_hash}")
+            except json.JSONDecodeError as e:
+                logger.debug(f"JSON decode failed: {e}")
 
-        # Fallback: scan lines for tx hash patterns
+        # Fallback: scan for specific transactionHash pattern
         if not tx_hash:
-            for line in output.split("\n"):
-                line = line.strip()
-                # Look for "transactionHash": "0x..."
-                if "transactionHash" in line:
-                    import re
-                    match = re.search(r'0x[a-fA-F0-9]{64}', line)
-                    if match:
-                        tx_hash = match.group(0)
+            # Look specifically for "transactionHash":"0x..." or "transactionHash": "0x..."
+            match = re.search(r'"transactionHash"\s*:\s*"(0x[a-fA-F0-9]{64})"', output)
+            if match:
+                tx_hash = match.group(1)
+                logger.debug(f"Extracted tx hash from regex: {tx_hash}")
+            else:
+                # Check for plain hash on its own line
+                for line in output.split("\n"):
+                    line = line.strip()
+                    if line.startswith("0x") and len(line) == 66:
+                        tx_hash = line
+                        logger.debug(f"Extracted tx hash from line: {tx_hash}")
                         break
-                # Also check for just the hash on its own line
-                if line.startswith("0x") and len(line) == 66:
-                    tx_hash = line
-                    break
 
         if tx_hash:
             logger.info(f"Transaction submitted: {tx_hash}")
