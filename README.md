@@ -21,7 +21,7 @@ Automated BGT reward allocation optimizer for Berachain validators. Hunts for th
 
 ```bash
 # Clone the repo
-git clone https://github.com/YOUR_USERNAME/honeyhunter.git
+git clone https://github.com/RhinoStake/HoneyHunter.git
 cd honeyhunter
 
 # Create virtual environment
@@ -224,10 +224,11 @@ sudo systemctl enable --now honeyhunter.timer
 
 - **API retry with backoff** - Retries failed API requests (3 attempts, exponential backoff)
 - **Transaction confirmation** - Waits for tx receipt and checks success/revert status
-- **Queued allocation detection** - Warns if overwriting a pending allocation
+- **Queued allocation detection** - Errors if a pending allocation exists (prevents wasted gas)
 - **Duplicate vault filtering** - Handles duplicate addresses from API
 - **Data cleansing** - Clamps negative runway values to 0
 - **Decimal math** - Uses Python Decimal for precise allocation calculations
+- **Healthchecks.io integration** - Optional cron monitoring (set `healthchecks.enabled: true`)
 
 ## Safety Features
 

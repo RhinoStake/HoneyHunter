@@ -19,7 +19,7 @@ validator:
   rpc_url: "https://rpc.berachain-apis.com"
 
 contracts:
-  # BeraChef contract address (rarely changes, but configurable)
+  # BeraChef contract address (from https://docs.berachain.com/developers/contracts/berachef)
   berachef_address: "0xdf960E8F3F19C481dDE769edEDD439ea1a63426a"
 
 strategy:
@@ -79,3 +79,13 @@ api:
 
   # Request timeout
   timeout_seconds: 30
+
+healthchecks:
+  # Enable healthchecks.io integration for cron monitoring
+  enabled: false
+
+  # Your healthchecks.io check UUID
+  # Get this from https://healthchecks.io after creating a check
+  id: ""
+  # Example:
+  # id: "5ca499c2-1cd4-4c5c-8eb3-c25e92093b5d"

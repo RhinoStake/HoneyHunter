@@ -63,6 +63,10 @@ DEFAULT_CONFIG = {
         "retry_delay_seconds": 5,
         "timeout_seconds": 30,
     },
+    "healthchecks": {
+        "enabled": False,
+        "id": "",  # UUID from healthchecks.io
+    },
 }
 
 FURTHERMORE_API_URL = "https://furthermore.app/api/vaults/v3"
@@ -200,6 +204,54 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
     logger.addHandler(file_handler)
 
     return logger
+
+
+# ============================================================================
+# Healthchecks.io Integration
+# ============================================================================
+
+
+def healthcheck_ping(config: dict, status: str = "", logger: Optional[logging.Logger] = None):
+    """
+    Send a ping to healthchecks.io.
+
+    Args:
+        config: Configuration dict
+        status: One of "", "start", "fail"
+        logger: Optional logger for debug output
+    """
+    hc_config = config.get("healthchecks", {})
+    if not hc_config.get("enabled", False):
+        return
+
+    hc_id = hc_config.get("id", "")
+    if not hc_id:
+        if logger:
+            logger.warning("Healthchecks enabled but no ID configured")
+        return
+
+    url = f"https://hc-ping.com/{hc_id}"
+    if status:
+        url = f"{url}/{status}"
+
+    try:
+        # Using requests with retry logic similar to curl -m 10 --retry 5
+        for attempt in range(5):
+            try:
+                response = requests.get(url, timeout=10)
+                if response.status_code == 200:
+                    if logger:
+                        logger.debug(f"Healthcheck ping sent: {status or 'success'}")
+                    return
+            except requests.exceptions.RequestException:
+                if attempt < 4:
+                    time.sleep(1)
+                    continue
+                raise
+    except Exception as e:
+        if logger:
+            logger.debug(f"Healthcheck ping failed: {e}")
+        # Don't raise - healthcheck failure shouldn't stop the script
 
 
 # ============================================================================
@@ -1241,6 +1293,10 @@ def main():
     # Override dry_run from command line
     dry_run = args.dry_run or args.compare or config["execution"]["dry_run"]
 
+    # Send healthcheck start ping (only for real runs)
+    if not dry_run:
+        healthcheck_ping(config, "start", logger)
+
     # Validate config (skip some checks for dry run)
     if not dry_run:
         if not validate_config(config, logger):
@@ -1296,6 +1352,8 @@ def main():
 
         if not allocations_differ(current, weights, threshold, logger):
             logger.info("Allocation unchanged, skipping update")
+            if not dry_run:
+                healthcheck_ping(config, "", logger)  # Success ping
             return 0
 
         # Execute
@@ -1303,22 +1361,34 @@ def main():
 
         if tx_hash:
             logger.info(f"Success! Transaction: {tx_hash}")
+            if not dry_run:
+                healthcheck_ping(config, "", logger)  # Success ping
             return 0
         else:
             logger.error("Transaction failed")
+            if not dry_run:
+                healthcheck_ping(config, "fail", logger)
             return 1
 
     except APIError as e:
         logger.error(f"API error: {e}")
+        if not dry_run:
+            healthcheck_ping(config, "fail", logger)
         return 1
     except AllocationError as e:
         logger.error(f"Allocation error: {e}")
+        if not dry_run:
+            healthcheck_ping(config, "fail", logger)
         return 1
     except ExecutionError as e:
         logger.error(f"Execution error: {e}")
+        if not dry_run:
+            healthcheck_ping(config, "fail", logger)
         return 1
     except Exception as e:
         logger.exception(f"Unexpected error: {e}")
+        if not dry_run:
+            healthcheck_ping(config, "fail", logger)
         return 1
 
 
