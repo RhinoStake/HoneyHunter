@@ -1,0 +1,81 @@
+# Berachain Reward Allocation Optimizer Configuration
+# =====================================================
+# Copy this file to config.yaml and fill in your details:
+#   cp config.yaml.example config.yaml
+
+validator:
+  # Your validator pubkey (required)
+  pubkey: "0xYOUR_VALIDATOR_PUBKEY_HERE"
+
+  # Path to file containing private key (required for execution)
+  private_key_file: "/path/to/your/private_key.txt"
+
+  # Staking pool address (leave empty for genesis validators)
+  # For staking pool validators, set this to your pool contract address
+  # Example: staking_pool_address: "0x1234567890abcdef..."
+  staking_pool_address: ""
+
+  # RPC endpoint
+  rpc_url: "https://rpc.berachain-apis.com"
+
+contracts:
+  # BeraChef contract address (rarely changes, but configurable)
+  berachef_address: "0xfb81E39E3970076ab2693fA5C45A07Cc724C93c2"
+
+strategy:
+  # Include vaults within this % of best vault's efficiency
+  # 0.5 = include vaults with at least 50% of top vault's usdPerBgt
+  efficiency_threshold: 0.5
+
+filters:
+  # Minimum TVL in USD
+  min_tvl_usd: 20000
+
+  # Minimum incentive runway in hours
+  # Running every 2 hours, require at least 3h of incentives remaining
+  min_incentive_runway_hours: 3
+
+  # Minimum USD per BGT efficiency (0 = just require incentives exist)
+  min_usd_per_bgt: 0
+
+  # Protocols to exclude (case-insensitive)
+  exclude_protocols: []
+  # Example:
+  # exclude_protocols:
+  #   - "SomeSketchyProtocol"
+
+  # Vault addresses to exclude (lowercase)
+  exclude_vaults: []
+  # Example:
+  # exclude_vaults:
+  #   - "0x1234..."
+
+limits:
+  # Maximum allocation to a single vault (basis points)
+  # BeraChef enforces 30% max, so this is a hard cap
+  max_single_vault_pct: 3000
+
+  # Maximum allocation to a single protocol (basis points)
+  max_protocol_pct: 5000
+
+execution:
+  # If true, show what would be done without executing
+  dry_run: false
+
+  # Extra blocks to add to start_block for safety margin
+  block_buffer: 100
+
+  # Minimum change in basis points to trigger an update
+  # If allocation changes by less than this, skip the update
+  # 500 = 5% change required
+  min_change_threshold: 500
+
+api:
+  # Number of retries for API requests
+  max_retries: 3
+
+  # Delay between retries (uses exponential backoff)
+  retry_delay_seconds: 5
+
+  # Request timeout
+  timeout_seconds: 30
