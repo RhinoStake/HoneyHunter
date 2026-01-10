@@ -5,12 +5,11 @@ Automated BGT reward allocation optimizer for Berachain validators. Hunts for th
 ## How It Works
 
 1. **Fetches** vault data from the Furthermore API (with retry logic)
-2. **Filters** vaults by: whitelisted, has active incentives, TVL, runway, blacklists
+2. **Filters** vaults by: whitelisted, has active incentives, runway, optional TVL/blacklists
 3. **Sorts** by `usdPerBgt` - USD value of incentives per BGT directed
-4. **Weights** allocation proportionally to efficiency (higher = more allocation)
-5. **Caps** at 30% per vault (BeraChef rule), 50% per protocol
-6. **Normalizes** to exactly 100% (required for transaction success)
-7. **Executes** via `cast send` with transaction confirmation
+4. **Selects** top N vaults (configurable, default 4)
+5. **Allocates** using greedy (30/30/30/10) or proportional weighting
+6. **Executes** via `cast send` with transaction confirmation
 
 ## Prerequisites
 
@@ -68,21 +67,23 @@ validator:
   rpc_url: "https://rpc.berachain-apis.com"
 
 contracts:
-  berachef_address: "0xfb81E39E3970076ab2693fA5C45A07Cc724C93c2"
+  berachef_address: "0xdf960E8F3F19C481dDE769edEDD439ea1a63426a"
 
 strategy:
-  efficiency_threshold: 0.5          # Include vaults within 50% of best efficiency
+  max_vaults: 4                      # How many vaults to allocate to (4-10)
+  allocation_mode: "greedy"          # "greedy" or "proportional"
+  efficiency_threshold: 0.85         # For proportional mode only
 
 filters:
-  min_tvl_usd: 20000                 # Minimum vault TVL
+  min_tvl_usd: 0                     # Minimum vault TVL (0 = no minimum)
   min_incentive_runway_hours: 3      # Minimum hours of incentives remaining
-  min_usd_per_bgt: 0                 # Minimum efficiency (0 = just require incentives exist)
+  min_usd_per_bgt: 0                 # Minimum efficiency (0 = any)
   exclude_protocols: []              # Blacklist protocols by name
   exclude_vaults: []                 # Blacklist vault addresses
 
 limits:
-  max_single_vault_pct: 3000         # Max 30% per vault (BeraChef hard limit)
-  max_protocol_pct: 5000             # Max 50% to one protocol
+  max_single_vault_pct: 3000         # Max 30% per vault (BeraChef limit)
+  max_protocol_pct: 5000             # Max 50% to one protocol (proportional mode)
 
 execution:
   dry_run: false
@@ -90,35 +91,79 @@ execution:
   min_change_threshold: 500          # Only update if allocation changes by >5%
 
 api:
-  max_retries: 3                     # Retry failed API requests
-  retry_delay_seconds: 5             # Base delay (uses exponential backoff)
+  max_retries: 3
+  retry_delay_seconds: 5
   timeout_seconds: 30
+
+healthchecks:
+  enabled: false
+  id: ""                             # Your healthchecks.io UUID
 ```
 
-## Allocation Algorithm
+## Allocation Modes
 
-The optimizer uses efficiency-weighted allocation:
+### Greedy Mode (Default) - Maximum Concentration
 
-1. **Sort** vaults by `usdPerBgt` (descending)
-2. **Filter** to vaults within `efficiency_threshold` of the best
-   - Example: top vault is $0.60/BGT → include vaults ≥$0.30/BGT at 50% threshold
-3. **Ensure** at least 4 vaults (required to satisfy 30% cap)
-4. **Weight** allocation proportionally to each vault's efficiency
-5. **Cap** at 30% per vault, redistribute excess to uncapped vaults
-6. **Cap** at 50% per protocol (skipped if all vaults are same protocol)
-7. **Normalize** to exactly 10000 basis points (100%)
+Allocates 30% (the BeraChef maximum) to each vault in order of USD/BGT until the budget is exhausted. The last vault gets the remainder.
 
-### Example
+**For 4 vaults:** 30% / 30% / 30% / 10%
 
-| Vault | usdPerBgt | Raw Weight | After 30% Cap | Final |
-|-------|-----------|------------|---------------|-------|
-| A     | $0.60     | 35%        | 30%           | 30%   |
-| B     | $0.50     | 29%        | 29%           | 30%   |
-| C     | $0.40     | 23%        | 23%           | 24%   |
-| D     | $0.35     | 13%        | 18%           | 16%   |
-| E     | $0.20     | --         | --            | excluded (below 50% threshold) |
+This maximizes your allocation to the highest-yielding vaults.
 
-**Note**: Allocations can be any size - there's no minimum. Total must always equal exactly 100%.
+```yaml
+strategy:
+  max_vaults: 4
+  allocation_mode: "greedy"
+```
+
+### Proportional Mode - Efficiency-Weighted Distribution
+
+Weights allocation proportionally to each vault's USD/BGT efficiency, respecting the 30% per-vault cap and optional protocol caps.
+
+Uses `efficiency_threshold` to filter candidates first (e.g., 0.85 = only vaults within 85% of the best).
+
+```yaml
+strategy:
+  max_vaults: 8
+  allocation_mode: "proportional"
+  efficiency_threshold: 0.85
+```
+
+### Example Comparison
+
+Given vaults with USD/BGT of $0.60, $0.50, $0.40, $0.35:
+
+| Mode | Vault A ($0.60) | Vault B ($0.50) | Vault C ($0.40) | Vault D ($0.35) |
+|------|-----------------|-----------------|-----------------|-----------------|
+| Greedy | 30% | 30% | 30% | 10% |
+| Proportional | 30% | 27% | 22% | 21% |
+
+Greedy concentrates 90% in top 3; Proportional spreads more evenly.
+
+## Strategy Presets
+
+### Aggressive (Max Returns)
+```yaml
+strategy:
+  max_vaults: 4
+  allocation_mode: "greedy"
+
+filters:
+  min_tvl_usd: 0
+  min_incentive_runway_hours: 3
+```
+
+### Conservative (Risk-Adjusted)
+```yaml
+strategy:
+  max_vaults: 8
+  allocation_mode: "proportional"
+  efficiency_threshold: 0.85
+
+filters:
+  min_tvl_usd: 50000
+  min_incentive_runway_hours: 24
+```
 
 ## CLI Options
 
@@ -155,8 +200,6 @@ WorkingDirectory=/path/to/honeyhunter
 ExecStart=/path/to/honeyhunter/venv/bin/python honeyhunter.py
 ```
 
-The script logs to `honeyhunter.log` in the working directory automatically.
-
 Create `/etc/systemd/system/honeyhunter.timer`:
 ```ini
 [Unit]
@@ -187,24 +230,21 @@ sudo systemctl enable --now honeyhunter.timer
 2025-01-08 18:30:02 [INFO] Fetched 157 valid vaults
 2025-01-08 18:30:02 [INFO] Filtered to 42 eligible vaults
 2025-01-08 18:30:02 [INFO] Best efficiency: $0.6240/BGT
-2025-01-08 18:30:02 [INFO] Efficiency threshold: $0.3120/BGT (50% of best)
-2025-01-08 18:30:02 [INFO] Candidates within threshold: 8
-2025-01-08 18:30:02 [INFO] Final allocation (5 vaults):
-2025-01-08 18:30:02 [INFO]   Kodiak WBTC-WETH: $0.6240/BGT, TVL $5.59M, Runway 24.0h -> 30.0%
-2025-01-08 18:30:02 [INFO]   Infrared iBERA: $0.5210/BGT, TVL $47.90M, Runway 72.0h -> 26.0%
-2025-01-08 18:30:02 [INFO]   BEX HONEY-WBERA: $0.4980/BGT, TVL $12.30M, Runway 24.0h -> 22.0%
-2025-01-08 18:30:02 [INFO]   Kodiak HONEY-USDC: $0.3500/BGT, TVL $8.10M, Runway 36.0h -> 14.0%
-2025-01-08 18:30:02 [INFO]   Dolomite dHONEY: $0.3200/BGT, TVL $3.20M, Runway 48.0h -> 8.0%
-2025-01-08 18:30:02 [INFO] Total allocation: 100.0%
-2025-01-08 18:30:02 [INFO] Current allocation (4 vaults):
-2025-01-08 18:30:02 [INFO]   0x1234...: 25.0%
-2025-01-08 18:30:02 [INFO]   0x5678...: 25.0%
-2025-01-08 18:30:02 [INFO]   0x9abc...: 25.0%
-2025-01-08 18:30:02 [INFO]   0xdef0...: 25.0%
-2025-01-08 18:30:02 [INFO] Allocation change of 2500 basis points exceeds threshold of 500
-2025-01-08 18:30:03 [INFO] Current block: 15500000, delay: 8640, buffer: 100
-2025-01-08 18:30:03 [INFO] Start block: 15508740
-2025-01-08 18:30:03 [INFO] Executing transaction...
+2025-01-08 18:30:02 [INFO] Allocation mode: greedy
+2025-01-08 18:30:02 [INFO] Max vaults: 4
+2025-01-08 18:30:02 [INFO] Selected 4 vaults:
+2025-01-08 18:30:02 [INFO]   Kodiak WBTC-WETH: $0.6240/BGT, runway 24.0h
+2025-01-08 18:30:02 [INFO]   Infrared iBERA: $0.5210/BGT, runway 72.0h
+2025-01-08 18:30:02 [INFO]   BEX HONEY-WBERA: $0.4980/BGT, runway 24.0h
+2025-01-08 18:30:02 [INFO]   Kodiak HONEY-USDC: $0.3500/BGT, runway 36.0h
+2025-01-08 18:30:02 [INFO] Greedy allocation result:
+2025-01-08 18:30:02 [INFO]   0x1234...: 30%
+2025-01-08 18:30:02 [INFO]   0x5678...: 30%
+2025-01-08 18:30:02 [INFO]   0x9abc...: 30%
+2025-01-08 18:30:02 [INFO]   0xdef0...: 10%
+2025-01-08 18:30:02 [INFO] Current block: 15500000, delay: 8640, buffer: 100
+2025-01-08 18:30:02 [INFO] Start block: 15508740
+2025-01-08 18:30:02 [INFO] Executing transaction...
 2025-01-08 18:30:08 [INFO] Transaction submitted: 0xabc123...
 2025-01-08 18:30:08 [INFO] Waiting for transaction confirmation...
 2025-01-08 18:30:15 [INFO] Transaction confirmed successfully!
@@ -236,7 +276,6 @@ sudo systemctl enable --now honeyhunter.timer
 - **Active incentives required** - Skips vaults with no incentive value
 - **Runway check** - Skips vaults with incentives expiring within threshold
 - **Change threshold** - Avoids unnecessary transactions for minor changes
-- **Protocol cap bypass** - If all vaults are same protocol, cap is skipped (can't enforce)
 - **Guaranteed 100%** - Robust normalization ensures total always equals exactly 10000 bp
 - **Dry-run mode** - Test without executing
 - **Logging** - Full audit trail in `honeyhunter.log` (UTC timestamps)
@@ -259,7 +298,7 @@ Not enough vaults pass your filters. Lower thresholds or check API data.
 - Verify RPC URL is accessible
 
 ### "Transaction REVERTED"
-- Allocation may violate BeraChef rules (>30% per vault, etc.)
+- Allocation may violate BeraChef rules (>30% per vault, >10 vaults, etc.)
 - Check if another allocation was queued between check and submit
 
 ### API timeout/connection errors

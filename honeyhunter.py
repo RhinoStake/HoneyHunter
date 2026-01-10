@@ -41,18 +41,20 @@ DEFAULT_CONFIG = {
         "berachef_address": "0xdf960E8F3F19C481dDE769edEDD439ea1a63426a",
     },
     "strategy": {
-        "efficiency_threshold": 0.5,  # Include vaults within 50% of best
+        "max_vaults": 4,              # Hard cap on vault count (4-10)
+        "allocation_mode": "greedy",  # "greedy" or "proportional"
+        "efficiency_threshold": 0.5,  # For proportional mode only
     },
     "filters": {
-        "min_tvl_usd": 20000,
+        "min_tvl_usd": 0,
         "min_incentive_runway_hours": 3,
-        "min_usd_per_bgt": 0,  # 0 = just require incentives exist
+        "min_usd_per_bgt": 0,
         "exclude_protocols": [],
         "exclude_vaults": [],
     },
     "limits": {
         "max_single_vault_pct": 3000,  # 30% - BeraChef hard limit
-        "max_protocol_pct": 5000,  # 50%
+        "max_protocol_pct": 5000,      # 50% - for proportional mode
     },
     "execution": {
         "dry_run": False,
@@ -291,6 +293,17 @@ def validate_config(config: dict, logger: logging.Logger) -> bool:
     if max_vault > 3000:
         errors.append(f"max_single_vault_pct ({max_vault}) exceeds BeraChef limit of 3000 (30%)")
 
+    # Validate strategy
+    max_vaults = config.get("strategy", {}).get("max_vaults", 4)
+    if max_vaults < 4:
+        errors.append(f"max_vaults ({max_vaults}) must be at least 4 for 30% cap compliance")
+    if max_vaults > 10:
+        errors.append(f"max_vaults ({max_vaults}) exceeds BeraChef limit of 10")
+
+    allocation_mode = config.get("strategy", {}).get("allocation_mode", "greedy")
+    if allocation_mode not in ("greedy", "proportional"):
+        errors.append(f"allocation_mode must be 'greedy' or 'proportional', got '{allocation_mode}'")
+
     if errors:
         for error in errors:
             logger.error(f"Config error: {error}")
@@ -481,13 +494,13 @@ def fetch_vaults(config: dict, logger: logging.Logger) -> list[Vault]:
 
 def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> list[Vault]:
     """Filter vaults based on configuration criteria."""
-    filters = config["filters"]
+    filters = config.get("filters", {})
 
-    min_tvl = filters["min_tvl_usd"]
-    min_runway = filters["min_incentive_runway_hours"]
-    min_efficiency = filters["min_usd_per_bgt"]
-    exclude_protocols = [p.lower() for p in filters["exclude_protocols"]]
-    exclude_vaults = [v.lower() for v in filters["exclude_vaults"]]
+    min_tvl = filters.get("min_tvl_usd", 0)
+    min_runway = filters.get("min_incentive_runway_hours", 3)
+    min_efficiency = filters.get("min_usd_per_bgt", 0)
+    exclude_protocols = [p.lower() for p in filters.get("exclude_protocols", [])]
+    exclude_vaults = [v.lower() for v in filters.get("exclude_vaults", [])]
 
     eligible = []
 
@@ -502,12 +515,12 @@ def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> 
             logger.debug(f"Skipping {vault.vault_name}: no active incentives")
             continue
 
-        if vault.bera_vault.active_incentives_usd <= 0:
-            logger.debug(f"Skipping {vault.vault_name}: no incentive value")
+        if vault.bera_vault.usd_per_bgt <= 0:
+            logger.debug(f"Skipping {vault.vault_name}: no usd_per_bgt value")
             continue
 
-        # TVL check
-        if vault.bera_vault.tvl < min_tvl:
+        # TVL check (if configured)
+        if min_tvl > 0 and vault.bera_vault.tvl < min_tvl:
             logger.debug(f"Skipping {vault.vault_name}: TVL ${vault.bera_vault.tvl:,.0f} < ${min_tvl:,}")
             continue
 
@@ -538,7 +551,7 @@ def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> 
 
 
 # ============================================================================
-# Optimization with Decimal Math
+# Optimization
 # ============================================================================
 
 
@@ -548,27 +561,28 @@ def optimize_allocation(
     logger: logging.Logger
 ) -> list[Weight]:
     """
-    Select vaults and generate efficiency-weighted allocation.
+    Select top vaults and allocate based on configured mode.
 
-    Uses Decimal math to avoid precision loss.
-    TOTAL MUST ALWAYS EQUAL 10000 BASIS POINTS (100%).
+    Modes:
+    - "greedy": Allocate 30% to each vault until budget exhausted, remainder to last.
+                Maximizes concentration in top vaults by USD/BGT.
+    - "proportional": Weight allocation by relative USD/BGT efficiency.
+                      Uses efficiency_threshold to filter candidates.
 
-    Algorithm:
-    1. Sort by usdPerBgt (descending)
-    2. Filter to vaults within efficiency_threshold of best
-    3. Ensure at least 4 vaults (for 30% cap compliance)
-    4. Calculate raw weights proportional to efficiency
-    5. Apply 30% per-vault cap, redistribute excess
-    6. Apply protocol cap if multiple protocols exist
-    7. Final normalization to exactly 10000
+    Both modes respect:
+    - max_vaults cap (4-10)
+    - 30% per-vault BeraChef limit
+    - Minimum 4 vaults for 30% cap compliance
     """
 
-    strategy = config["strategy"]
-    limits = config["limits"]
+    strategy = config.get("strategy", {})
+    limits = config.get("limits", {})
 
-    efficiency_threshold = Decimal(str(strategy["efficiency_threshold"]))
-    max_single_pct = limits["max_single_vault_pct"]
-    max_protocol_pct = limits["max_protocol_pct"]
+    max_vaults = min(max(strategy.get("max_vaults", 4), 4), 10)  # Clamp 4-10
+    allocation_mode = strategy.get("allocation_mode", "greedy")
+    efficiency_threshold = Decimal(str(strategy.get("efficiency_threshold", 0.5)))
+    max_single_pct = limits.get("max_single_vault_pct", 3000)
+    max_protocol_pct = limits.get("max_protocol_pct", 5000)
 
     # Sort by usdPerBgt (highest first)
     sorted_vaults = sorted(
@@ -580,70 +594,116 @@ def optimize_allocation(
     if not sorted_vaults:
         raise AllocationError("No vaults to allocate to!")
 
-    # Get best efficiency as reference
     best_efficiency = Decimal(str(sorted_vaults[0].bera_vault.usd_per_bgt))
 
     if best_efficiency == 0:
         raise AllocationError("Best vault has 0 usdPerBgt - cannot calculate allocation")
 
-    min_efficiency = best_efficiency * efficiency_threshold
-
     logger.info(f"Best efficiency: ${best_efficiency:.4f}/BGT")
-    logger.info(f"Efficiency threshold: ${min_efficiency:.4f}/BGT ({efficiency_threshold:.0%} of best)")
+    logger.info(f"Allocation mode: {allocation_mode}")
+    logger.info(f"Max vaults: {max_vaults}")
 
-    # Filter to vaults within threshold
-    candidates = [
-        v for v in sorted_vaults
-        if Decimal(str(v.bera_vault.usd_per_bgt)) >= min_efficiency
-    ]
+    # Select candidates based on mode
+    if allocation_mode == "proportional":
+        # Filter by efficiency threshold first, then apply max_vaults cap
+        min_efficiency = best_efficiency * efficiency_threshold
+        candidates = [
+            v for v in sorted_vaults
+            if Decimal(str(v.bera_vault.usd_per_bgt)) >= min_efficiency
+        ]
+        logger.info(f"Efficiency threshold: ${min_efficiency:.4f}/BGT ({efficiency_threshold:.0%} of best)")
+        logger.info(f"Vaults within threshold: {len(candidates)}")
+        # Apply cap
+        candidates = candidates[:max_vaults]
+    else:
+        # Greedy mode: just take top N by USD/BGT
+        candidates = sorted_vaults[:max_vaults]
 
-    logger.info(f"Candidates within threshold: {len(candidates)}")
-
-    # Need at least 4 vaults to satisfy 30% cap (4 * 25% = 100%)
-    min_vaults_needed = 4
-    if len(candidates) < min_vaults_needed:
-        logger.warning(f"Only {len(candidates)} candidates within threshold - need {min_vaults_needed} for 30% cap")
-        # Add next best vaults that passed filters but didn't meet efficiency threshold
-        for v in sorted_vaults:
-            if v not in candidates:
-                candidates.append(v)
-                logger.info(f"Adding {v.vault_name} (${v.bera_vault.usd_per_bgt:.4f}/BGT) to reach minimum vault count")
-            if len(candidates) >= min_vaults_needed:
-                break
-
-    if len(candidates) < min_vaults_needed:
+    # Need at least 4 vaults for 30% cap compliance
+    if len(candidates) < 4:
         raise AllocationError(
-            f"Only {len(candidates)} eligible vaults available, need at least {min_vaults_needed} "
-            f"to satisfy 30% per-vault cap"
+            f"Only {len(candidates)} eligible vaults, need at least 4 for 30% cap compliance. "
+            f"Try lowering filter thresholds."
         )
 
-    # Check if all vaults are from same protocol
-    protocols = set(v.protocol_name for v in candidates)
-    single_protocol = len(protocols) == 1
-    if single_protocol:
-        logger.warning(f"All {len(candidates)} vaults are from {list(protocols)[0]} - protocol cap will not apply")
+    logger.info(f"Selected {len(candidates)} vaults:")
+    for v in candidates:
+        logger.info(f"  {v.protocol_name} {v.vault_name}: ${v.bera_vault.usd_per_bgt:.4f}/BGT, runway {v.runway_hours:.1f}h")
 
-    # Calculate raw weights based on efficiency using Decimal
+    # Generate allocation based on mode
+    if allocation_mode == "greedy":
+        weights = _allocate_greedy(candidates, max_single_pct, logger)
+    else:
+        weights = _allocate_proportional(candidates, max_single_pct, max_protocol_pct, logger)
+
+    # Final validation
+    _validate_weights(weights, max_single_pct)
+
+    return weights
+
+
+def _allocate_greedy(
+    candidates: list[Vault],
+    max_single_pct: int,
+    logger: logging.Logger
+) -> list[Weight]:
+    """
+    Greedy allocation: Give each vault the max (30%) until budget exhausted.
+    Last vault gets remainder. Maximizes concentration in top vaults.
+
+    For 4 vaults: 30/30/30/10
+    For 5 vaults: 30/30/30/10/0 (5th vault unused if first 4 fill 100%)
+    """
+    weights: list[Weight] = []
+    remaining = 10000
+
+    for i, vault in enumerate(candidates):
+        if remaining <= 0:
+            break
+
+        if i == len(candidates) - 1:
+            # Last vault gets remainder
+            pct = remaining
+        else:
+            pct = min(max_single_pct, remaining)
+
+        remaining -= pct
+        weights.append(Weight(vault.bera_vault.address, pct))
+
+    logger.info("Greedy allocation result:")
+    for w in weights:
+        logger.info(f"  {w.vault_address}: {w.percentage/100:.0f}%")
+
+    return weights
+
+
+def _allocate_proportional(
+    candidates: list[Vault],
+    max_single_pct: int,
+    max_protocol_pct: int,
+    logger: logging.Logger
+) -> list[Weight]:
+    """
+    Proportional allocation: Weight by relative USD/BGT efficiency.
+    Respects per-vault cap (30%) and per-protocol cap (50%) with redistribution.
+    """
+    # Calculate raw weights based on efficiency
     total_efficiency = sum(Decimal(str(v.bera_vault.usd_per_bgt)) for v in candidates)
 
-    # Initial allocation: proportional to efficiency
     allocations: dict[str, dict] = {}
     for vault in candidates:
         vault_efficiency = Decimal(str(vault.bera_vault.usd_per_bgt))
-        raw_pct = (vault_efficiency / total_efficiency * 10000).quantize(Decimal('1'), rounding=ROUND_DOWN)
+        raw_pct = int((vault_efficiency / total_efficiency * 10000).quantize(Decimal('1'), rounding=ROUND_DOWN))
         allocations[vault.bera_vault.address] = {
             "vault": vault,
-            "pct": int(raw_pct),
+            "pct": raw_pct,
             "capped": False
         }
 
     # Apply 30% per-vault cap iteratively (redistribute excess)
-    max_iterations = 20
-    for iteration in range(max_iterations):
+    for _ in range(20):
         excess = 0
-
-        # Find excess from over-cap vaults
-        for addr, alloc in allocations.items():
+        for alloc in allocations.values():
             if alloc["pct"] > max_single_pct and not alloc["capped"]:
                 excess += alloc["pct"] - max_single_pct
                 alloc["pct"] = max_single_pct
@@ -652,30 +712,22 @@ def optimize_allocation(
         if excess == 0:
             break
 
-        # Redistribute excess proportionally to uncapped vaults
-        uncapped_vaults = [a for a in allocations.values() if not a["capped"]]
-        if not uncapped_vaults:
-            # All vaults capped - this shouldn't happen with 4+ vaults at 30% cap
-            logger.warning("All vaults hit 30% cap - distributing remainder to least-capped")
+        # Redistribute to uncapped vaults
+        uncapped = [a for a in allocations.values() if not a["capped"]]
+        if not uncapped:
             break
 
-        uncapped_total = sum(a["pct"] for a in uncapped_vaults)
-        if uncapped_total == 0:
-            # Edge case: uncapped vaults have 0 allocation, distribute equally
-            per_vault = excess // len(uncapped_vaults)
-            for alloc in uncapped_vaults:
-                alloc["pct"] += per_vault
-        else:
-            # Distribute proportionally
-            uncapped_total_dec = Decimal(str(uncapped_total))
-            for alloc in uncapped_vaults:
-                share = Decimal(str(alloc["pct"])) / uncapped_total_dec * Decimal(str(excess))
+        uncapped_total = sum(a["pct"] for a in uncapped)
+        if uncapped_total > 0:
+            for alloc in uncapped:
+                share = Decimal(str(alloc["pct"])) / Decimal(str(uncapped_total)) * Decimal(str(excess))
                 alloc["pct"] += int(share.quantize(Decimal('1'), rounding=ROUND_DOWN))
 
-    # Apply protocol cap ONLY if multiple protocols exist
-    if not single_protocol:
+    # Apply protocol cap (only if multiple protocols)
+    protocols = set(a["vault"].protocol_name for a in allocations.values())
+    if len(protocols) > 1:
         protocol_totals: dict[str, int] = {}
-        for addr, alloc in allocations.items():
+        for alloc in allocations.values():
             protocol = alloc["vault"].protocol_name
             protocol_totals[protocol] = protocol_totals.get(protocol, 0) + alloc["pct"]
 
@@ -704,90 +756,66 @@ def optimize_allocation(
                             share = Decimal(str(alloc["pct"])) / Decimal(str(other_total)) * Decimal(str(excess))
                             new_pct = alloc["pct"] + int(share.quantize(Decimal('1'), rounding=ROUND_DOWN))
                             alloc["pct"] = min(new_pct, max_single_pct)
-                    else:
-                        # Distribute equally
-                        per_vault = excess // len(other_vaults)
-                        for alloc in other_vaults:
-                            alloc["pct"] = min(alloc["pct"] + per_vault, max_single_pct)
 
-    # CRITICAL: Normalize to EXACTLY 10000
-    # This is non-negotiable - transaction will fail otherwise
+    # Normalize to exactly 10000
     current_total = sum(a["pct"] for a in allocations.values())
     diff = 10000 - current_total
 
     if diff != 0:
-        logger.debug(f"Adjusting allocation by {diff} basis points to reach exactly 10000")
-
-        # Sort by current allocation (adjust larger ones first for positive diff, smaller for negative)
-        sorted_allocs = sorted(allocations.values(), key=lambda a: a["pct"], reverse=(diff > 0))
-
-        remaining_diff = diff
+        # Add/subtract from largest vault
+        sorted_allocs = sorted(allocations.values(), key=lambda a: a["pct"], reverse=True)
         for alloc in sorted_allocs:
-            if remaining_diff == 0:
-                break
-
-            # Calculate how much we can adjust this vault
             if diff > 0:
-                # Adding: can go up to max_single_pct
                 headroom = max_single_pct - alloc["pct"]
-                adjustment = min(remaining_diff, headroom)
+                adjustment = min(diff, headroom)
             else:
-                # Subtracting: can go down to 1 (keep at least 1 bp)
                 headroom = alloc["pct"] - 1
-                adjustment = max(remaining_diff, -headroom)
+                adjustment = max(diff, -headroom)
 
             if adjustment != 0:
                 alloc["pct"] += adjustment
-                remaining_diff -= adjustment
+                diff -= adjustment
 
-        # If we still have remainder (shouldn't happen), force it on the largest
-        if remaining_diff != 0:
-            sorted_allocs[0]["pct"] += remaining_diff
-            logger.warning(f"Forced final adjustment of {remaining_diff} on largest vault")
+            if diff == 0:
+                break
 
-    # Build final weights
-    weights: list[Weight] = []
-    for addr, alloc in allocations.items():
-        if alloc["pct"] > 0:  # Only include positive allocations
-            weights.append(Weight(addr, alloc["pct"]))
-
-    # Sort by percentage descending for nice output
+    # Build weights
+    weights = [
+        Weight(addr, alloc["pct"])
+        for addr, alloc in allocations.items()
+        if alloc["pct"] > 0
+    ]
     weights.sort(key=lambda w: w.percentage, reverse=True)
 
-    # FINAL VALIDATION - these are hard requirements
-    total_pct = sum(w.percentage for w in weights)
+    logger.info("Proportional allocation result:")
+    for w in weights:
+        logger.info(f"  {w.vault_address}: {w.percentage/100:.1f}%")
 
-    if total_pct != 10000:
-        raise AllocationError(f"CRITICAL: Allocation total is {total_pct}, MUST be exactly 10000")
+    return weights
+
+
+def _validate_weights(weights: list[Weight], max_single_pct: int):
+    """Validate weights meet BeraChef requirements."""
+    total = sum(w.percentage for w in weights)
+
+    if total != 10000:
+        raise AllocationError(f"CRITICAL: Allocation total is {total}, must be exactly 10000")
+
+    if len(weights) < 4:
+        raise AllocationError(f"CRITICAL: Only {len(weights)} vaults, need at least 4")
+
+    if len(weights) > 10:
+        raise AllocationError(f"CRITICAL: {len(weights)} vaults exceeds BeraChef max of 10")
 
     for w in weights:
         if w.percentage > max_single_pct:
             raise AllocationError(f"CRITICAL: Vault {w.vault_address} at {w.percentage} exceeds max {max_single_pct}")
         if w.percentage <= 0:
-            raise AllocationError(f"CRITICAL: Vault {w.vault_address} has non-positive allocation {w.percentage}")
-
-    if len(weights) < 4:
-        raise AllocationError(f"CRITICAL: Only {len(weights)} vaults with positive allocation, need at least 4")
-
-    # Log selected vaults
-    logger.info(f"Recommended allocation ({len(weights)} vaults):")
-    for weight in weights:
-        vault = allocations[weight.vault_address]["vault"]
-        logger.info(
-            f"  {vault.protocol_name} {vault.vault_name}: "
-            f"${vault.bera_vault.usd_per_bgt:.4f}/BGT, "
-            f"TVL ${vault.bera_vault.tvl/1e6:.2f}M, "
-            f"Runway {vault.runway_hours:.1f}h -> "
-            f"{weight.percentage/100:.1f}%"
-        )
-
-    logger.info(f"Total allocation: {total_pct/100:.1f}%")
-
-    return weights
+            raise AllocationError(f"CRITICAL: Vault {w.vault_address} has non-positive allocation")
 
 
 # ============================================================================
-# Current Allocation Fetching (Actually Works Now)
+# Current Allocation Fetching
 # ============================================================================
 
 
@@ -804,26 +832,19 @@ def parse_allocation_response(raw_output: str, logger: logging.Logger) -> list[W
         # Clean up the output
         cleaned = raw_output.strip()
 
-        # The output is a tuple, extract the array part
-        # Format: (uint64, (address,uint96)[])
-        # Example output might be like:
-        # (15500000, [(0x1234..., 2500), (0x5678..., 7500)])
-
-        # Find the array portion - look for the pattern after first comma
+        # Find the array portion
         if "[" in cleaned and "]" in cleaned:
             array_start = cleaned.index("[")
             array_end = cleaned.rindex("]") + 1
             array_str = cleaned[array_start:array_end]
 
             # Parse each tuple in the array
-            # Remove outer brackets
             inner = array_str[1:-1].strip()
 
             if not inner:
                 return []
 
             # Split by ), ( to get individual tuples
-            # But need to handle the format carefully
             current_tuple = ""
             depth = 0
             tuples = []
@@ -868,7 +889,6 @@ def get_current_allocation(config: dict, logger: logging.Logger) -> Optional[All
         return None
 
     try:
-        # Get active reward allocation
         result = subprocess.run(
             [
                 "cast", "call", berachef,
@@ -888,10 +908,9 @@ def get_current_allocation(config: dict, logger: logging.Logger) -> Optional[All
         output = result.stdout.strip()
         logger.debug(f"Current allocation raw: {output}")
 
-        # Parse start block (first number in output)
+        # Parse start block
         start_block = 0
         if output:
-            # Try to extract start block from beginning
             match = re.search(r'\((\d+)', output)
             if match:
                 start_block = int(match.group(1))
@@ -926,7 +945,6 @@ def get_queued_allocation(config: dict, logger: logging.Logger) -> Optional[Allo
         return None
 
     try:
-        # Get queued reward allocation
         result = subprocess.run(
             [
                 "cast", "call", berachef,
@@ -1002,7 +1020,7 @@ def allocations_differ(
 
 
 # ============================================================================
-# Execution with Secure Key Handling
+# Execution
 # ============================================================================
 
 
@@ -1064,11 +1082,7 @@ def execute_allocation(
     logger: logging.Logger,
     dry_run: bool = False
 ) -> Optional[str]:
-    """
-    Execute the allocation via cast send.
-
-    Uses --password flag with /dev/stdin to avoid exposing key in process list.
-    """
+    """Execute the allocation via cast send."""
 
     validator = config["validator"]
     pubkey = validator["pubkey"]
@@ -1117,7 +1131,6 @@ def execute_allocation(
         function_sig = "queueNewRewardAllocation(bytes,uint64,(address,uint96)[])"
         args = [pubkey, str(start_block), weights_str]
 
-    # Log what we're doing (safe to log)
     logger.info(f"Target: {target}")
     logger.info(f"Function: {function_sig}")
     logger.info(f"Start block: {start_block}")
@@ -1137,9 +1150,6 @@ def execute_allocation(
     except PermissionError:
         raise ExecutionError(f"Cannot read private key file: {private_key_file}")
 
-    # Build command - use --private-key with stdin to avoid ps exposure
-    # Unfortunately cast doesn't support reading from stdin well
-    # Best option: use the file directly with cast
     cmd = [
         "cast", "send", target, function_sig
     ] + args + [
@@ -1154,7 +1164,7 @@ def execute_allocation(
             cmd,
             capture_output=True,
             text=True,
-            timeout=120  # 2 minute timeout for tx
+            timeout=120
         )
 
         # Clear the key variable
@@ -1164,41 +1174,31 @@ def execute_allocation(
         if result.returncode != 0:
             raise ExecutionError(f"Transaction failed: {result.stderr}")
 
-        # Parse transaction hash from output
         output = result.stdout.strip()
         logger.debug(f"Transaction output: {output}")
 
         # Try to extract tx hash
         tx_hash = None
 
-        # Check if output is JSON (cast sometimes returns event logs as JSON)
         if output.startswith("[") or output.startswith("{"):
             try:
                 data = json.loads(output)
-                # Could be a list of event logs
                 if isinstance(data, list) and len(data) > 0:
                     tx_hash = data[0].get("transactionHash")
-                    logger.debug(f"Extracted tx hash from JSON array: {tx_hash}")
                 elif isinstance(data, dict):
                     tx_hash = data.get("transactionHash")
-                    logger.debug(f"Extracted tx hash from JSON object: {tx_hash}")
-            except json.JSONDecodeError as e:
-                logger.debug(f"JSON decode failed: {e}")
+            except json.JSONDecodeError:
+                pass
 
-        # Fallback: scan for specific transactionHash pattern
         if not tx_hash:
-            # Look specifically for "transactionHash":"0x..." or "transactionHash": "0x..."
             match = re.search(r'"transactionHash"\s*:\s*"(0x[a-fA-F0-9]{64})"', output)
             if match:
                 tx_hash = match.group(1)
-                logger.debug(f"Extracted tx hash from regex: {tx_hash}")
             else:
-                # Check for plain hash on its own line
                 for line in output.split("\n"):
                     line = line.strip()
                     if line.startswith("0x") and len(line) == 66:
                         tx_hash = line
-                        logger.debug(f"Extracted tx hash from line: {tx_hash}")
                         break
 
         if tx_hash:
@@ -1215,9 +1215,7 @@ def execute_allocation(
                 )
 
                 if receipt_result.returncode == 0:
-                    # Check for success status
                     if "status" in receipt_result.stdout:
-                        # Look for status: 1 (success) or status: 0 (failure)
                         if "status               1" in receipt_result.stdout or "status: 1" in receipt_result.stdout:
                             logger.info("Transaction confirmed successfully!")
                         elif "status               0" in receipt_result.stdout or "status: 0" in receipt_result.stdout:
@@ -1353,7 +1351,7 @@ def main():
         if not allocations_differ(current, weights, threshold, logger):
             logger.info("Allocation unchanged, skipping update")
             if not dry_run:
-                healthcheck_ping(config, "", logger)  # Success ping
+                healthcheck_ping(config, "", logger)
             return 0
 
         # Execute
@@ -1362,7 +1360,7 @@ def main():
         if tx_hash:
             logger.info(f"Success! Transaction: {tx_hash}")
             if not dry_run:
-                healthcheck_ping(config, "", logger)  # Success ping
+                healthcheck_ping(config, "", logger)
             return 0
         else:
             logger.error("Transaction failed")

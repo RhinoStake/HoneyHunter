@@ -23,16 +23,35 @@ contracts:
   berachef_address: "0xdf960E8F3F19C481dDE769edEDD439ea1a63426a"
 
 strategy:
-  # Include vaults within this % of best vault's efficiency
-  # 0.5 = include vaults with at least 50% of top vault's usdPerBgt
-  efficiency_threshold: 0.5
+  # Maximum number of vaults to allocate to (4-10)
+  # BeraChef requires minimum 4 (for 30% cap) and maximum 10
+  # Lower = more concentrated in top vaults = higher efficiency
+  max_vaults: 4
+
+  # Allocation mode: "greedy" or "proportional"
+  #
+  # "greedy" (recommended for max returns):
+  #   Allocates 30% to each top vault until budget exhausted
+  #   Result: 30/30/30/10 for 4 vaults - maximizes concentration
+  #
+  # "proportional":
+  #   Weights allocation by relative USD/BGT efficiency
+  #   Uses efficiency_threshold to filter candidates first
+  #   Better for risk distribution across more vaults
+  allocation_mode: "greedy"
+
+  # For proportional mode only: include vaults within this % of best
+  # 0.85 = include vaults with at least 85% of top vault's usdPerBgt
+  # Ignored in greedy mode
+  efficiency_threshold: 0.85
 
 filters:
-  # Minimum TVL in USD
-  min_tvl_usd: 20000
+  # Minimum TVL in USD (0 = no minimum)
+  # Set higher for more established vaults
+  min_tvl_usd: 0
 
   # Minimum incentive runway in hours
-  # Running every 2 hours, require at least 3h of incentives remaining
+  # Should be > your rotation frequency (e.g., 3h if rotating every 2h)
   min_incentive_runway_hours: 3
 
   # Minimum USD per BGT efficiency (0 = just require incentives exist)
@@ -52,10 +71,11 @@ filters:
 
 limits:
   # Maximum allocation to a single vault (basis points)
-  # BeraChef enforces 30% max, so this is a hard cap
+  # BeraChef enforces 30% max, so don't change this
   max_single_vault_pct: 3000
 
   # Maximum allocation to a single protocol (basis points)
+  # Only applies in proportional mode
   max_protocol_pct: 5000
 
 execution:
