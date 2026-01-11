@@ -5,7 +5,7 @@ Automated BGT reward allocation optimizer for Berachain validators. Hunts for th
 ## How It Works
 
 1. **Fetches** vault data from the Furthermore API (with retry logic)
-2. **Filters** vaults by: whitelisted, has active incentives, runway, optional TVL/blacklists
+2. **Filters** vaults by: whitelisted, has active incentives, minimum incentive value, runway, optional TVL/blacklists
 3. **Sorts** by `usdPerBgt` - USD value of incentives per BGT directed
 4. **Selects** top N vaults (configurable, default 4)
 5. **Allocates** using greedy (30/30/30/10) or proportional weighting
@@ -77,6 +77,7 @@ strategy:
 filters:
   min_tvl_usd: 0                     # Minimum vault TVL (0 = no minimum)
   min_incentive_runway_hours: 3      # Minimum hours of incentives remaining
+  min_incentive_value: 0             # Minimum incentive value in $thousands (0 = any)
   min_usd_per_bgt: 0                 # Minimum efficiency (0 = any)
   exclude_protocols: []              # Blacklist protocols by name
   exclude_vaults: []                 # Blacklist vault addresses
@@ -274,6 +275,7 @@ sudo systemctl enable --now honeyhunter.timer
 
 - **Whitelist verification** - Only uses BeraChef whitelisted vaults
 - **Active incentives required** - Skips vaults with no incentive value
+- **Minimum incentive value** - Optional threshold for total active incentive USD
 - **Runway check** - Skips vaults with incentives expiring within threshold
 - **Change threshold** - Avoids unnecessary transactions for minor changes
 - **Guaranteed 100%** - Robust normalization ensures total always equals exactly 10000 bp
@@ -286,7 +288,7 @@ sudo systemctl enable --now honeyhunter.timer
 Edit `config.yaml` and add your validator pubkey.
 
 ### "No eligible vaults after filtering"
-- Lower `min_tvl_usd` or `min_incentive_runway_hours`
+- Lower `min_tvl_usd`, `min_incentive_value`, or `min_incentive_runway_hours`
 - Check if Furthermore API is returning data
 
 ### "Only N eligible vaults available, need at least 4"

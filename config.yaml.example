@@ -54,6 +54,10 @@ filters:
   # Should be > your rotation frequency (e.g., 3h if rotating every 2h)
   min_incentive_runway_hours: 3
 
+  # Minimum total active incentive value in thousands of USD (0 = no minimum)
+  # e.g., 10 = require at least $10,000 in active incentives
+  min_incentive_value: 0
+
   # Minimum USD per BGT efficiency (0 = just require incentives exist)
   min_usd_per_bgt: 0
 

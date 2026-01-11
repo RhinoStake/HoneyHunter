@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
     "filters": {
         "min_tvl_usd": 0,
         "min_incentive_runway_hours": 3,
+        "min_incentive_value": 0,
         "min_usd_per_bgt": 0,
         "exclude_protocols": [],
         "exclude_vaults": [],
@@ -498,6 +499,7 @@ def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> 
 
     min_tvl = filters.get("min_tvl_usd", 0)
     min_runway = filters.get("min_incentive_runway_hours", 3)
+    min_incentive_value = filters.get("min_incentive_value", 0) * 1000  # Config is in thousands
     min_efficiency = filters.get("min_usd_per_bgt", 0)
     exclude_protocols = [p.lower() for p in filters.get("exclude_protocols", [])]
     exclude_vaults = [v.lower() for v in filters.get("exclude_vaults", [])]
@@ -513,6 +515,11 @@ def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> 
         # Must have active incentives
         if not vault.bera_vault.incentives:
             logger.debug(f"Skipping {vault.vault_name}: no active incentives")
+            continue
+
+        # Minimum incentive value check (if configured)
+        if min_incentive_value > 0 and vault.bera_vault.active_incentives_usd < min_incentive_value:
+            logger.debug(f"Skipping {vault.vault_name}: incentive value ${vault.bera_vault.active_incentives_usd:,.0f} < ${min_incentive_value:,.0f}")
             continue
 
         if vault.bera_vault.usd_per_bgt <= 0:
