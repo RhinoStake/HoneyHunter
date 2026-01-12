@@ -677,6 +677,12 @@ def _allocate_greedy(
         remaining -= pct
         weights.append(Weight(vault.bera_vault.address, pct))
 
+    # Calculate weighted average $/BGT
+    usd_per_bgt_map = {v.bera_vault.address: v.bera_vault.usd_per_bgt for v in candidates}
+    weighted_sum = sum(w.percentage * usd_per_bgt_map[w.vault_address] for w in weights)
+    target_usd_per_bgt = weighted_sum / 10000
+    logger.info(f"Calculated target of ${target_usd_per_bgt:.4f}/BGT")
+
     logger.info("Greedy allocation result:")
     for w in weights:
         logger.info(f"  {w.vault_address}: {w.percentage/100:.0f}%")
@@ -793,6 +799,12 @@ def _allocate_proportional(
         if alloc["pct"] > 0
     ]
     weights.sort(key=lambda w: w.percentage, reverse=True)
+
+    # Calculate weighted average $/BGT
+    usd_per_bgt_map = {v.bera_vault.address: v.bera_vault.usd_per_bgt for v in candidates}
+    weighted_sum = sum(w.percentage * usd_per_bgt_map[w.vault_address] for w in weights)
+    target_usd_per_bgt = weighted_sum / 10000
+    logger.info(f"Calculated target of ${target_usd_per_bgt:.4f}/BGT")
 
     logger.info("Proportional allocation result:")
     for w in weights:
