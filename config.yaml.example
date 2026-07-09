@@ -100,7 +100,7 @@ execution:
   priority_fee_gwei: 1
 
   # Max fee in gwei (maxFeePerGas)
-  # 0 = let cast estimate from current base fee (recommended)
+  # 0 = derive from current base fee: priority_fee + 2x base fee (recommended)
   max_fee_gwei: 0
 
 api:

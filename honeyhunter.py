@@ -1059,6 +1059,24 @@ def get_current_block(config: dict, logger: logging.Logger) -> int:
     return int(result.stdout.strip())
 
 
+def get_base_fee(config: dict, logger: logging.Logger) -> Optional[int]:
+    """Get current base fee in wei, or None if it can't be fetched."""
+    rpc_url = config["validator"]["rpc_url"]
+
+    try:
+        result = subprocess.run(
+            ["cast", "basefee", "--rpc-url", rpc_url],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30
+        )
+        return int(result.stdout.strip())
+    except (subprocess.SubprocessError, ValueError) as e:
+        logger.warning(f"Could not fetch base fee: {e}")
+        return None
+
+
 def get_start_block(config: dict, logger: logging.Logger) -> int:
     """Calculate the start block for the new allocation."""
     rpc_url = config["validator"]["rpc_url"]
@@ -1159,8 +1177,25 @@ def execute_allocation(
 
     fee_flags = []
     if priority_fee_gwei:
-        fee_flags += ["--priority-gas-price", str(int(priority_fee_gwei * 1_000_000_000))]
-    if max_fee_gwei:
+        priority_fee_wei = int(priority_fee_gwei * 1_000_000_000)
+        if max_fee_gwei:
+            max_fee_wei = int(max_fee_gwei * 1_000_000_000)
+        else:
+            # cast's own estimate can fall below the priority fee, which the
+            # node rejects ("max priority fee per gas higher than max fee per
+            # gas"), so derive the cap from the current base fee instead
+            base_fee = get_base_fee(config, logger)
+            headroom = 2 * base_fee if base_fee is not None else 1_000_000_000
+            max_fee_wei = priority_fee_wei + headroom
+        if max_fee_wei < priority_fee_wei:
+            raise ExecutionError(
+                f"max_fee_gwei ({max_fee_gwei}) is below priority_fee_gwei ({priority_fee_gwei})"
+            )
+        fee_flags += [
+            "--priority-gas-price", str(priority_fee_wei),
+            "--gas-price", str(max_fee_wei),
+        ]
+    elif max_fee_gwei:
         fee_flags += ["--gas-price", str(int(max_fee_gwei * 1_000_000_000))]
 
     logger.info(f"Target: {target}")
@@ -1168,7 +1203,7 @@ def execute_allocation(
     logger.info(f"Start block: {start_block}")
     logger.info(f"Weights: {len(weights)} vaults")
     if priority_fee_gwei:
-        logger.info(f"Priority fee: {priority_fee_gwei} gwei")
+        logger.info(f"Priority fee: {priority_fee_gwei} gwei, max fee: {max_fee_wei / 1e9:.2f} gwei")
 
     if dry_run:
         logger.info("DRY RUN - not executing transaction")

@@ -91,7 +91,7 @@ execution:
   block_buffer: 100                  # Extra blocks added to start_block
   min_change_threshold: 500          # Only update if allocation changes by >5%
   priority_fee_gwei: 1               # Priority fee (Berachain enforces 1 gwei minimum)
-  max_fee_gwei: 0                    # Max fee (0 = estimate from base fee)
+  max_fee_gwei: 0                    # Max fee (0 = priority fee + 2x base fee)
 
 api:
   max_retries: 3
