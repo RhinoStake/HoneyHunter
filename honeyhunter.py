@@ -61,6 +61,8 @@ DEFAULT_CONFIG = {
         "dry_run": False,
         "block_buffer": 100,
         "min_change_threshold": 500,  # basis points (5%)
+        "priority_fee_gwei": 1,       # Berachain nodes enforce a 1 gwei minimum priority fee
+        "max_fee_gwei": 0,            # 0 = let cast estimate maxFeePerGas
     },
     "api": {
         "max_retries": 3,
@@ -1150,14 +1152,27 @@ def execute_allocation(
         function_sig = "queueNewRewardAllocation(bytes,uint64,(address,uint96)[])"
         args = [pubkey, str(start_block), weights_str]
 
+    # Gas fee flags (Berachain nodes enforce a minimum priority fee)
+    exec_config = config.get("execution", {})
+    priority_fee_gwei = exec_config.get("priority_fee_gwei", 1)
+    max_fee_gwei = exec_config.get("max_fee_gwei", 0)
+
+    fee_flags = []
+    if priority_fee_gwei:
+        fee_flags += ["--priority-gas-price", str(int(priority_fee_gwei * 1_000_000_000))]
+    if max_fee_gwei:
+        fee_flags += ["--gas-price", str(int(max_fee_gwei * 1_000_000_000))]
+
     logger.info(f"Target: {target}")
     logger.info(f"Function: {function_sig}")
     logger.info(f"Start block: {start_block}")
     logger.info(f"Weights: {len(weights)} vaults")
+    if priority_fee_gwei:
+        logger.info(f"Priority fee: {priority_fee_gwei} gwei")
 
     if dry_run:
         logger.info("DRY RUN - not executing transaction")
-        logger.info(f"Would execute: cast send {target} '{function_sig}' {' '.join(args)}")
+        logger.info(f"Would execute: cast send {target} '{function_sig}' {' '.join(args)} {' '.join(fee_flags)}")
         return "dry-run"
 
     # Read private key
@@ -1171,7 +1186,7 @@ def execute_allocation(
 
     cmd = [
         "cast", "send", target, function_sig
-    ] + args + [
+    ] + args + fee_flags + [
         "--rpc-url", rpc_url,
         "--private-key", private_key
     ]

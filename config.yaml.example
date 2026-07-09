@@ -94,6 +94,15 @@ execution:
   # 500 = 5% change required
   min_change_threshold: 500
 
+  # Priority fee in gwei (maxPriorityFeePerGas)
+  # Berachain nodes enforce a minimum priority fee of 1 gwei
+  # Set to 0 to let cast estimate it (may fall below node minimums)
+  priority_fee_gwei: 1
+
+  # Max fee in gwei (maxFeePerGas)
+  # 0 = let cast estimate from current base fee (recommended)
+  max_fee_gwei: 0
+
 api:
   # Number of retries for API requests
   max_retries: 3
