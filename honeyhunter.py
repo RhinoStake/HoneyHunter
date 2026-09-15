@@ -1107,6 +1107,104 @@ def get_start_block(config: dict, logger: logging.Logger) -> int:
     return start_block
 
 
+# Revert selectors from BeraChef (IPOLErrors) and the staking pool's AccessControl
+KNOWN_REVERTS = {
+    "0x3be31f8c": "RewardAllocationAlreadyQueued()",
+    "0xec2caa0d": "InvalidStartBlock()",
+    "0x13134d24": "InvalidRewardAllocationWeights()",
+    "0xf6fae721": "TooManyWeights()",
+    "0x585b9263": "InvalidWeight()",
+    "0x7c214f04": "NotOperator()",
+    "0x36407850": "NotWhitelistedVault()",
+    "0xdd9df759": "DuplicateReceiver(address)",
+    "0x978dc040": "ZeroPercentageWeight()",
+    "0x3e38573f": "InvalidateDefaultRewardAllocation()",
+    "0x462a2bb2": "RewardAllocationBlockDelayTooLarge()",
+    "0xcb1ee123": "InvalidMaxWeightPerVault()",
+    "0xe2517d3f": "AccessControlUnauthorizedAccount(address,bytes32)",
+    "0x08c379a0": "Error(string)",
+    "0x4e487b71": "Panic(uint256)",
+}
+
+
+def decode_revert(stderr: str) -> str:
+    """Turn cast's revert output into a readable error name."""
+    match = re.search(r'data: "?(0x[0-9a-fA-F]*)"?', stderr)
+    if not match:
+        return stderr.strip()
+    data = match.group(1)
+    selector = data[:10].lower()
+    name = KNOWN_REVERTS.get(selector)
+    if name is None:
+        try:
+            result = subprocess.run(
+                ["cast", "4byte", selector],
+                capture_output=True, text=True, timeout=15
+            )
+            name = result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else selector
+        except (subprocess.SubprocessError, IndexError):
+            name = selector
+    if name == "Error(string)" and len(data) > 10:
+        try:
+            result = subprocess.run(
+                ["cast", "abi-decode", "--input", "f(string)", "0x" + data[10:]],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0:
+                return f"Error({result.stdout.strip()})"
+        except subprocess.SubprocessError:
+            pass
+    return f"{name} (data: {data})"
+
+
+def simulate_call(
+    target: str,
+    function_sig: str,
+    args: list[str],
+    sender: str,
+    rpc_url: str,
+    logger: logging.Logger
+) -> None:
+    """Run the call via eth_call from the signer so a revert surfaces with its reason.
+
+    cast send only reports "execution reverted" when gas estimation fails,
+    which hides why the contract rejected the call.
+    """
+    cmd = ["cast", "call", target, function_sig] + args + ["--from", sender, "--rpc-url", rpc_url]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise ExecutionError(f"Simulation reverted: {decode_revert(result.stderr)}")
+    logger.debug("Simulation succeeded")
+
+
+# Rough upper bound for queueRewardsAllocation; observed ~230k for 4 vaults
+GAS_LIMIT_ESTIMATE = 400_000
+
+
+def check_gas_balance(sender: str, max_fee_wei: int, rpc_url: str, logger: logging.Logger) -> None:
+    """Fail early if the signer can't cover gas at the max fee.
+
+    An underfunded signer makes the node cap the gas limit at balance/maxFee,
+    so the estimate runs out of gas and is reported as "execution reverted".
+    """
+    try:
+        result = subprocess.run(
+            ["cast", "balance", sender, "--rpc-url", rpc_url],
+            capture_output=True, text=True, timeout=30
+        )
+        balance = int(result.stdout.strip())
+    except (subprocess.SubprocessError, ValueError) as e:
+        logger.warning(f"Could not check signer balance: {e}")
+        return
+    required = GAS_LIMIT_ESTIMATE * max_fee_wei
+    logger.info(f"Signer balance: {balance / 1e18:.6f} BERA (need ~{required / 1e18:.6f} at max fee)")
+    if balance < required:
+        raise ExecutionError(
+            f"Signer {sender} has {balance / 1e18:.6f} BERA but needs ~{required / 1e18:.6f} "
+            f"for gas at {max_fee_wei / 1e9:.2f} gwei; fund the account"
+        )
+
+
 def format_weights_for_cast(weights: list[Weight]) -> str:
     """Format weights array for cast command."""
     parts = []
@@ -1176,6 +1274,7 @@ def execute_allocation(
     max_fee_gwei = exec_config.get("max_fee_gwei", 0)
 
     fee_flags = []
+    max_fee_wei = 0
     if priority_fee_gwei:
         priority_fee_wei = int(priority_fee_gwei * 1_000_000_000)
         if max_fee_gwei:
@@ -1196,7 +1295,8 @@ def execute_allocation(
             "--gas-price", str(max_fee_wei),
         ]
     elif max_fee_gwei:
-        fee_flags += ["--gas-price", str(int(max_fee_gwei * 1_000_000_000))]
+        max_fee_wei = int(max_fee_gwei * 1_000_000_000)
+        fee_flags += ["--gas-price", str(max_fee_wei)]
 
     logger.info(f"Target: {target}")
     logger.info(f"Function: {function_sig}")
@@ -1218,6 +1318,23 @@ def execute_allocation(
         raise ExecutionError(f"Private key file not found: {private_key_file}")
     except PermissionError:
         raise ExecutionError(f"Cannot read private key file: {private_key_file}")
+
+    # Simulate first so a contract revert is reported with its reason
+    try:
+        result = subprocess.run(
+            ["cast", "wallet", "address", "--private-key", private_key],
+            capture_output=True, text=True, timeout=30
+        )
+        sender = result.stdout.strip() if result.returncode == 0 else ""
+    except subprocess.SubprocessError:
+        sender = ""
+    if sender:
+        logger.info(f"Simulating from {sender}...")
+        simulate_call(target, function_sig, args, sender, rpc_url, logger)
+        if max_fee_wei:
+            check_gas_balance(sender, max_fee_wei, rpc_url, logger)
+    else:
+        logger.warning("Could not derive sender address; skipping simulation")
 
     cmd = [
         "cast", "send", target, function_sig
