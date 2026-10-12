@@ -559,6 +559,42 @@ def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> 
     return eligible
 
 
+def select_filler_vaults(
+    vaults: list[Vault],
+    eligible: list[Vault],
+    config: dict
+) -> list[Vault]:
+    """
+    Rank vaults that can pad an allocation when too few are eligible.
+
+    Fillers must still be whitelisted and not blacklisted (BeraChef rejects
+    non-whitelisted vaults). Vaults that still have some incentives (failed
+    only soft filters) rank first, then by USD/BGT and incentive value.
+    """
+    filters = config.get("filters", {})
+    exclude_protocols = [p.lower() for p in filters.get("exclude_protocols", [])]
+    exclude_vaults = [v.lower() for v in filters.get("exclude_vaults", [])]
+    eligible_addresses = {v.bera_vault.address.lower() for v in eligible}
+
+    fillers = [
+        v for v in vaults
+        if v.is_whitelisted
+        and v.bera_vault.address.lower() not in eligible_addresses
+        and v.protocol_name.lower() not in exclude_protocols
+        and v.bera_vault.address.lower() not in exclude_vaults
+    ]
+
+    return sorted(
+        fillers,
+        key=lambda v: (
+            bool(v.bera_vault.incentives),
+            v.bera_vault.usd_per_bgt,
+            v.bera_vault.active_incentives_usd,
+        ),
+        reverse=True
+    )
+
+
 # ============================================================================
 # Optimization
 # ============================================================================
@@ -567,10 +603,15 @@ def filter_vaults(vaults: list[Vault], config: dict, logger: logging.Logger) -> 
 def optimize_allocation(
     vaults: list[Vault],
     config: dict,
-    logger: logging.Logger
+    logger: logging.Logger,
+    fillers: Optional[list[Vault]] = None
 ) -> list[Weight]:
     """
     Select top vaults and allocate based on configured mode.
+
+    If fewer than 4 vaults are eligible, pads with `fillers` (in order) so the
+    run still meets the 30% cap. Fillers always go last, so in greedy mode they
+    take the remainder slot (e.g. 30/30/30/10 with the filler at 10%).
 
     Modes:
     - "greedy": Allocate 30% to each vault until budget exhausted, remainder to last.
@@ -628,12 +669,28 @@ def optimize_allocation(
         # Greedy mode: just take top N by USD/BGT
         candidates = sorted_vaults[:max_vaults]
 
-    # Need at least 4 vaults for 30% cap compliance
+    # Need at least 4 vaults for 30% cap compliance; pad with fillers if short
     if len(candidates) < 4:
-        raise AllocationError(
-            f"Only {len(candidates)} eligible vaults, need at least 4 for 30% cap compliance. "
-            f"Try lowering filter thresholds."
+        needed = 4 - len(candidates)
+        padding = (fillers or [])[:needed]
+        if len(padding) < needed:
+            raise AllocationError(
+                f"Only {len(candidates)} eligible vaults and {len(padding)} filler vaults, "
+                f"need at least 4 for 30% cap compliance."
+            )
+        logger.warning(
+            f"Only {len(candidates)} eligible vaults; padding with {needed} filler vault(s):"
         )
+        for v in padding:
+            logger.warning(
+                f"  {v.protocol_name} {v.vault_name}: ${v.bera_vault.usd_per_bgt:.4f}/BGT, "
+                f"incentives ${v.bera_vault.active_incentives_usd:,.0f}"
+            )
+        candidates = candidates + padding
+        if allocation_mode != "greedy":
+            # Proportional weights a 0 $/BGT filler at 0%, which BeraChef rejects
+            logger.warning("Using greedy allocation for this run so fillers take the remainder")
+            allocation_mode = "greedy"
 
     logger.info(f"Selected {len(candidates)} vaults:")
     for v in candidates:
@@ -1505,7 +1562,8 @@ def main():
             return 1
 
         # Optimize allocation
-        weights = optimize_allocation(eligible, config, logger)
+        fillers = select_filler_vaults(vaults, eligible, config)
+        weights = optimize_allocation(eligible, config, logger, fillers)
 
         if not weights:
             logger.error("Failed to generate allocation")
